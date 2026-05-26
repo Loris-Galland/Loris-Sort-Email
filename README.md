@@ -1,10 +1,12 @@
 # mail-sorter
 
-Automatically sort and clean an Outlook inbox with 10k+ emails using a local AI model.
-Reads only metadata (sender, subject, date) — never the email body or attachments.
-Everything runs on your machine: no data leaves, no API costs.
+> **Work in progress** — project is still being built, not all phases are done yet.
 
----
+## What is it?
+
+At some point I looked at my inbox and it had built up to something like 10k+ emails — newsletters, promos, invoices, notifications, all piled up with zero organisation. I had absolutely no intention of going through them manually one by one, so I decided to automate it instead.
+
+The idea is simple: a local AI model classifies everything by category, then a dashboard lets me review and delete in bulk. No data leaves the machine, nothing paid, nothing phoning home. It reads only metadata — sender, subject, date — never the email body or attachments.
 
 ## Requirements
 
@@ -17,8 +19,6 @@ Everything runs on your machine: no data leaves, no API costs.
   ```
 - A Microsoft account (Outlook / Office 365)
 
----
-
 ## Installation
 
 ```bash
@@ -29,12 +29,9 @@ uv sync
 
 Edit `.env` and fill in your `AZURE_CLIENT_ID` (see Azure setup below).
 
----
-
 ## Azure App Registration (free, 5 minutes)
 
-You need to register a free application on Azure so the tool can access your emails
-through Microsoft's official API.
+You need to register a free application on Azure so the tool can access your emails through Microsoft's official API.
 
 1. Go to [portal.azure.com](https://portal.azure.com) and sign in
 2. Search for **App registrations** and open it
@@ -51,8 +48,6 @@ through Microsoft's official API.
 
 No client secret needed — the app uses OAuth2 PKCE.
 
----
-
 ## Usage
 
 ```bash
@@ -68,12 +63,10 @@ uv run streamlit run ui/app.py  # open the validation dashboard
 Additional options:
 
 ```bash
-mail-sorter index --force           # re-index even already stored emails
+mail-sorter index --force             # re-index even already stored emails
 mail-sorter classify --batch-size 10  # smaller batches for low-RAM machines
 mail-sorter auth logout
 ```
-
----
 
 ## Privacy
 
@@ -87,8 +80,6 @@ mail-sorter auth logout
 The AI model (Ollama) runs entirely on your machine.
 Tokens are encrypted by your OS (Windows Credential Manager).
 The SQLite database stays local.
-
----
 
 ## Development
 
