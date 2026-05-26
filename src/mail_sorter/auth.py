@@ -5,13 +5,14 @@ exchange code for tokens, store encrypted via OS keyring. No client_secret neede
 """
 
 import base64
+import contextlib
 import hashlib
 import json
 import os
 import secrets
 import time
 import webbrowser
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -177,8 +178,9 @@ def save_token(token_data: dict) -> None:
     Adds an expires_at field so we can check expiry without a network call.
     60s margin to avoid using a token that's about to expire.
     """
-    expires_in = max(token_data.get("expires_in", 3600), 61)  # guard against malformed token responses
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in - 60)
+    # guard against malformed responses where expires_in < 60
+    expires_in = max(token_data.get("expires_in", 3600), 61)
+    expires_at = datetime.now(UTC) + timedelta(seconds=expires_in - 60)
     token_data["expires_at"] = expires_at.isoformat()
     keyring.set_password(KEYRING_SERVICE, KEYRING_TOKEN_KEY, json.dumps(token_data))
 
@@ -189,10 +191,8 @@ def load_token() -> dict | None:
 
 
 def delete_token() -> None:
-    try:
+    with contextlib.suppress(keyring.errors.PasswordDeleteError):
         keyring.delete_password(KEYRING_SERVICE, KEYRING_TOKEN_KEY)
-    except keyring.errors.PasswordDeleteError:
-        pass
 
 
 def get_valid_access_token() -> str | None:
@@ -205,7 +205,7 @@ def get_valid_access_token() -> str | None:
         return None
 
     expires_at = datetime.fromisoformat(token_data["expires_at"])
-    if datetime.now(timezone.utc) < expires_at:
+    if datetime.now(UTC) < expires_at:
         return token_data["access_token"]
 
     # Token expired — try a silent refresh
@@ -269,7 +269,8 @@ def login() -> None:
         try:
             token_data = _exchange_code_for_token(client_id, tenant_id, code, code_verifier)
         except httpx.HTTPStatusError as exc:
-            err = exc.response.json().get("error_description", str(exc)) if exc.response.content else str(exc)
+            body = exc.response.json() if exc.response.content else {}
+            err = body.get("error_description", str(exc))
             console.print(f"[red]Token exchange failed:[/red] {err}")
             raise typer.Exit(1) from exc
 

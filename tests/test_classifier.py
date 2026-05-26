@@ -14,14 +14,14 @@ def test_category_names_match_prompt():
         "NEWSLETTER", "PROMO", "NOTIFICATION", "FACTURE",
         "PROFESSIONNEL", "PERSONNEL", "SPAM", "A_TRAITER",
     }
-    assert VALID_CATEGORIES == expected
+    assert expected == VALID_CATEGORIES
 
 
 def test_ollama_response_format():
     """Verify the JSON format we expect from Ollama can be parsed correctly."""
     mock_response = json.dumps([
-        {"id": "msg_promo_001", "category": "PROMO", "confidence": 94, "reason": "Commercial sender"},
-        {"id": "msg_facture_002", "category": "FACTURE", "confidence": 88, "reason": "Billing email"},
+        {"id": "msg_promo_001", "category": "PROMO", "confidence": 94, "reason": "Commercial"},
+        {"id": "msg_facture_002", "category": "FACTURE", "confidence": 88, "reason": "Billing"},
     ])
 
     parsed = json.loads(mock_response)
@@ -37,14 +37,14 @@ def test_ollama_response_format():
 def test_rule_high_importance():
     """importance=high -> only A_TRAITER or PROFESSIONNEL allowed."""
     allowed = {"A_TRAITER", "PROFESSIONNEL"}
-    result = {"id": "msg_pro_003", "category": "A_TRAITER", "confidence": 97, "reason": "Urgent flag"}
+    result = {"id": "msg_pro_003", "category": "A_TRAITER", "confidence": 97, "reason": "Urgent"}
     assert result["category"] in allowed
 
 
 def test_rule_attachment_not_spam():
     """has_attachments=True -> never NEWSLETTER or SPAM."""
     forbidden = {"NEWSLETTER", "SPAM"}
-    result = {"id": "msg_facture_002", "category": "FACTURE", "confidence": 88, "reason": "Invoice with attachment"}
+    result = {"id": "msg_facture_002", "category": "FACTURE", "confidence": 88, "reason": "Invoice"}
     assert result["category"] not in forbidden
 
 

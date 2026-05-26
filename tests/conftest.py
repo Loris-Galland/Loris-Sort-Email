@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from mail_sorter.db import Base, Email
+from mail_sorter.db import Base
 
 
 @pytest.fixture

@@ -5,9 +5,9 @@ Stores email metadata only — never body content or attachments.
 
 import json
 import os
+from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import datetime, timezone
-from typing import Generator
+from datetime import UTC, datetime
 
 from dotenv import load_dotenv
 from sqlalchemy import Boolean, Column, DateTime, Integer, String, create_engine, event
@@ -55,7 +55,8 @@ class Email(Base):
     size_bytes = Column(Integer)
 
     # Set by classifier.py — null until Phase 3 runs
-    category = Column(String)    # NEWSLETTER | PROMO | NOTIFICATION | FACTURE | PROFESSIONNEL | PERSONNEL | SPAM | A_TRAITER
+    # see classifier.py for the full list of valid values
+    category = Column(String)
     confidence = Column(Integer) # 0-100
     reason = Column(String)
 
@@ -63,7 +64,7 @@ class Email(Base):
     status = Column(String, default="pending")
     action_taken = Column(String)
 
-    indexed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    indexed_at = Column(DateTime, default=lambda: datetime.now(UTC))
 
     def to_dict(self) -> dict:
         return {
@@ -96,7 +97,7 @@ class ActionLog(Base):
     __tablename__ = "action_logs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    timestamp = Column(DateTime, default=lambda: datetime.now(UTC))
     action = Column(String, nullable=False)  # delete | archive | restore
     category = Column(String)
     count = Column(Integer)
