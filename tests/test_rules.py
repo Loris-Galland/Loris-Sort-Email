@@ -9,7 +9,15 @@ import pytest
 from mail_sorter import actions
 from mail_sorter.actions import delete_emails, move_emails, restore
 from mail_sorter.db import ActionLog, Email
-from mail_sorter.rules import RuleError, build_template, match_rules, parse_rules
+from mail_sorter.rules import (
+    RuleError,
+    build_template,
+    first_rule_for,
+    load_rules,
+    match_rules,
+    parse_rules,
+    save_rules,
+)
 
 
 def email(msg_id: str, sender: str, subject: str = "", days_old: int = 0) -> Email:
@@ -149,6 +157,41 @@ def test_delete_goes_to_trash_and_can_be_restored_once(db_session, backup_dir):
 
     with pytest.raises(ValueError, match="already restored"):
         restore(graph, db_session, result.log_id)
+
+
+def test_restore_counts_emails_missing_locally_as_failed(db_session, backup_dir):
+    kept, lost = email("a", "x@shop.com"), email("b", "y@shop.com")
+    db_session.add_all([kept, lost])
+    db_session.flush()
+    graph = FakeGraph()
+    result = delete_emails(graph, db_session, [kept, lost])
+    db_session.delete(lost)
+    db_session.flush()
+
+    restored = restore(graph, db_session, result.log_id)
+    assert (restored.succeeded, restored.failed) == (1, 1)
+    assert kept.status == "pending"
+
+
+def test_save_rules_round_trip(tmp_path):
+    rules = parse_rules(
+        {
+            "rules": [
+                {"folder": "Jeux/Riot", "senders": ["riotgames.com"]},
+                {
+                    "action": "delete",
+                    "senders": ["promo@shop.com"],
+                    "older_than_days": 30,
+                    "subject_contains": ['soldes "été"'],
+                },
+            ]
+        }
+    )
+    path = tmp_path / "rules.toml"
+    save_rules(rules, path)
+    assert load_rules(path) == rules
+    assert first_rule_for("news@mail.riotgames.com", rules).folder == "Jeux/Riot"
+    assert first_rule_for("someone@else.com", rules) is None
 
 
 def test_empty_selection_does_nothing(db_session, backup_dir):

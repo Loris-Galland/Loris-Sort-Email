@@ -2,8 +2,11 @@
 
 import random
 from datetime import datetime, timedelta
+from pathlib import Path
 
 DEMO_DB_PATH = "./demo.db"
+DEMO_RULES_PATH = Path("./demo_rules.toml")
+DEMO_BACKUP_DIR = Path("./backups/demo")
 
 # (sender name, address, category, subjects)
 _SENDERS = [

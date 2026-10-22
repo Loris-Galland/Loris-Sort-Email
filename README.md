@@ -48,22 +48,48 @@ No client secret needed — the app uses OAuth2 PKCE.
 
 ## Usage
 
-### 1. Log in and index
+### Sort visually in the dashboard
 
 ```bash
-uv run mail-sorter auth login     # opens the browser, log in to Outlook
-uv run mail-sorter index          # fetch the metadata of every inbox email into SQLite
-uv run mail-sorter senders        # who fills your inbox the most
+uv run mail-sorter auth login       # once, opens the browser to log in to Outlook
+uv run streamlit run ui/app.py      # opens the dashboard in your browser
 ```
 
-`index` is a full sync: run it again whenever you want fresh data.
+1. Click **Sync inbox** in the sidebar to fetch your inbox (metadata only).
+2. **Overview** shows your biggest senders and categories. Click a bar to open it.
+3. **Senders** is where the sorting happens. Pick a sender in the table, narrow by age if you want ("older than 6 months"), then:
+   - **Move** its emails to a folder (`Jeux/Riot`, created if missing), or
+   - **Delete** them (they go to Deleted Items).
 
-### 2. Sort by sender with rules (no AI needed)
+   Keep "Also save as a rule" ticked and the same thing will happen to its future emails.
+4. **Rules** lists your rules in an editable table. **Apply all rules** sorts everything new in one click, after a confirmation.
+5. **Categories** shows what the AI classified (promo, newsletter...), handy to delete in bulk.
+6. **History** lists every action and can move the emails back to the inbox.
+
+Every move or delete asks for confirmation first.
+
+**Classify with AI** in the sidebar needs [Ollama](https://ollama.com) running locally with `ollama pull mistral`. Sorting by sender works without it.
+
+Want to look around first without touching your mailbox?
 
 ```bash
-uv run mail-sorter rules init                # creates rules.toml with your biggest senders
-uv run mail-sorter rules apply               # preview: how many emails each rule matches
-uv run mail-sorter rules apply --execute     # re-index, confirm, then move / delete
+uv run mail-sorter demo
+uv run streamlit run ui/app.py -- --demo
+```
+
+The demo uses its own database, rules and backups, so it never touches your real ones.
+
+### Command line
+
+Everything the dashboard does is also available from the terminal:
+
+```bash
+uv run mail-sorter index                     # sync the inbox metadata into SQLite
+uv run mail-sorter senders                   # who fills your inbox the most
+uv run mail-sorter rules init                # create rules.toml from your biggest senders
+uv run mail-sorter rules apply               # preview what the rules would do
+uv run mail-sorter rules apply --execute     # re-sync, confirm, then move / delete
+uv run mail-sorter classify --limit 200      # classify with the local AI
 ```
 
 `rules.toml` example:
@@ -80,36 +106,13 @@ older_than_days = 30                                # optional
 subject_contains = ["promo", "soldes"]              # optional
 ```
 
-Rules only act on what is in the inbox when you run them. Run `rules apply --execute` again later to sort new emails.
+Rules only act on what is in the inbox when you apply them, apply them again from time to time to sort new emails.
 
-### 3. Classify the rest with a local AI (optional)
-
-```bash
-ollama serve                              # if Ollama is not already running
-uv run mail-sorter classify               # all pending emails
-uv run mail-sorter classify --limit 200   # try on a small sample first
-```
-
-Emails with the same sender and subject are classified only once. On a CPU-only machine expect a few seconds per email, `Ctrl+C` stops safely and the next run resumes.
-
-### 4. Review in the dashboard
-
-```bash
-uv run streamlit run ui/app.py
-```
-
-Browse by category or by sender, select emails, then delete them or move them to a folder. Every action asks for confirmation.
-
-Want to look around first without touching your mailbox?
-
-```bash
-uv run mail-sorter demo
-uv run streamlit run ui/app.py -- --demo
-```
+For classification, emails with the same sender and subject are classified only once. On a CPU-only machine expect a few seconds per email. `Ctrl+C` stops safely and the next run resumes.
 
 ### Undo
 
-Every move or delete writes a JSON backup in `backups/` and can be undone:
+Every move or delete writes a JSON backup in `backups/` and can be undone from the History page, or:
 
 ```bash
 uv run mail-sorter history

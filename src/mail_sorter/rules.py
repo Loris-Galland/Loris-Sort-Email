@@ -4,6 +4,7 @@ No AI involved: a rule matches emails by sender address or domain, optionally
 by subject keywords and age, then moves them to a folder or to the trash.
 """
 
+import json
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -59,6 +60,22 @@ class Rule:
     @property
     def label(self) -> str:
         return "trash" if self.delete else f"folder {self.folder}"
+
+    def to_toml(self) -> str:
+        # json strings and lists are valid TOML values
+        lines = ["[[rules]]"]
+        if self.delete:
+            lines.append('action = "delete"')
+        else:
+            lines.append(f"folder = {json.dumps(self.folder, ensure_ascii=False)}")
+        lines.append(f"senders = {json.dumps(self.senders, ensure_ascii=False)}")
+        if self.subject_contains:
+            lines.append(
+                f"subject_contains = {json.dumps(self.subject_contains, ensure_ascii=False)}"
+            )
+        if self.older_than_days is not None:
+            lines.append(f"older_than_days = {self.older_than_days}")
+        return "\n".join(lines)
 
     def matches_sender(self, address: str | None) -> bool:
         address = (address or "").lower()
@@ -117,7 +134,8 @@ def parse_rules(data: dict) -> list[Rule]:
     return rules
 
 
-def load_rules(path: Path = RULES_PATH) -> list[Rule]:
+def load_rules(path: Path | None = None) -> list[Rule]:
+    path = path or RULES_PATH
     if not path.exists():
         raise RuleError(f"{path} not found. Create it with: mail-sorter rules init")
     try:
@@ -125,6 +143,26 @@ def load_rules(path: Path = RULES_PATH) -> list[Rule]:
     except tomllib.TOMLDecodeError as exc:
         raise RuleError(f"{path} is not valid TOML: {exc}") from exc
     return parse_rules(data)
+
+
+def save_rules(rules: list[Rule], path: Path | None = None) -> None:
+    path = path or RULES_PATH
+    header = TEMPLATE.split("[[rules]]")[0].rstrip()
+    body = "\n\n".join(rule.to_toml() for rule in rules)
+    path.write_text(f"{header}\n\n{body}\n", encoding="utf-8")
+
+
+def upsert_rule(rules: list[Rule], rule: Rule) -> list[Rule]:
+    """Replace the rule targeting the same senders, or append the new one."""
+    same = [i for i, r in enumerate(rules) if sorted(r.senders) == sorted(rule.senders)]
+    if same:
+        return [rule if i == same[0] else r for i, r in enumerate(rules) if i not in same[1:]]
+    return [*rules, rule]
+
+
+def first_rule_for(address: str, rules: list[Rule]) -> Rule | None:
+    """First rule whose senders match this address, ignoring subject and age filters."""
+    return next((rule for rule in rules if rule.matches_sender(address)), None)
 
 
 def match_rules(emails: list[Email], rules: list[Rule]) -> list[tuple[Rule, list[Email]]]:

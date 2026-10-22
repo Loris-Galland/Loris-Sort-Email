@@ -23,7 +23,8 @@ SIZE_PROPERTY = "Integer 0x0E08"
 PREFER_IMMUTABLE_ID = 'IdType="ImmutableId"'
 
 PAGE_SIZE = 500
-BATCH_SIZE = 20  # hard limit of the $batch endpoint
+# Outlook runs at most 4 requests at once per mailbox, a bigger $batch only gets 429s
+BATCH_SIZE = 4
 MAX_RETRIES = 6
 
 # Replaced in tests so retries do not actually wait
@@ -40,9 +41,8 @@ class GraphError(Exception):
         self.status_code = status_code
 
 
-def _retry_delay(response: httpx.Response, attempt: int) -> float:
-    retry_after = response.headers.get("Retry-After")
-    if retry_after and retry_after.isdigit():
+def _retry_delay(retry_after: str | None, attempt: int) -> float:
+    if retry_after and str(retry_after).isdigit():
         return float(retry_after)
     return float(2**attempt)
 
@@ -52,6 +52,10 @@ def _error_message(response: httpx.Response) -> str:
         return response.json()["error"]["message"]
     except (ValueError, KeyError, TypeError):
         return response.text[:200]
+
+
+def _folders_url(parent_id: str | None) -> str:
+    return f"/me/mailFolders/{parent_id}/childFolders" if parent_id else "/me/mailFolders"
 
 
 class GraphClient:
@@ -78,25 +82,14 @@ class GraphClient:
         for attempt in range(MAX_RETRIES):
             response = self._http.request(method, url, headers=self._headers(), **kwargs)
             if response.status_code in (429, 502, 503, 504):
-                sleep(_retry_delay(response, attempt))
+                sleep(_retry_delay(response.headers.get("Retry-After"), attempt))
                 continue
             if response.status_code >= 400:
                 raise GraphError(response.status_code, _error_message(response))
             return response
         raise GraphError(response.status_code, "too many retries")
 
-    def inbox_count(self) -> int:
-        resp = self.request("GET", "/me/mailFolders/inbox", params={"$select": "totalItemCount"})
-        return resp.json().get("totalItemCount", 0)
-
-    def iter_messages(self, folder: str = "inbox") -> Iterator[dict]:
-        """Yield the metadata of every message in a folder, following pagination."""
-        url = f"/me/mailFolders/{folder}/messages"
-        params = {
-            "$select": MESSAGE_FIELDS,
-            "$top": str(PAGE_SIZE),
-            "$expand": f"singleValueExtendedProperties($filter=id eq '{SIZE_PROPERTY}')",
-        }
+    def _paginate(self, url: str, params: dict) -> Iterator[dict]:
         while url:
             data = self.request("GET", url, params=params).json()
             yield from data.get("value", [])
@@ -104,16 +97,18 @@ class GraphClient:
             url = data.get("@odata.nextLink")
             params = None
 
-    def _child_folders(self, parent_id: str | None) -> list[dict]:
-        url = f"/me/mailFolders/{parent_id}/childFolders" if parent_id else "/me/mailFolders"
-        params = {"$select": "id,displayName", "$top": "250"}
-        folders = []
-        while url:
-            data = self.request("GET", url, params=params).json()
-            folders.extend(data.get("value", []))
-            url = data.get("@odata.nextLink")
-            params = None
-        return folders
+    def inbox_count(self) -> int:
+        resp = self.request("GET", "/me/mailFolders/inbox", params={"$select": "totalItemCount"})
+        return resp.json().get("totalItemCount", 0)
+
+    def iter_inbox(self) -> Iterator[dict]:
+        """Yield the metadata of every message in the inbox."""
+        params = {
+            "$select": MESSAGE_FIELDS,
+            "$top": str(PAGE_SIZE),
+            "$expand": f"singleValueExtendedProperties($filter=id eq '{SIZE_PROPERTY}')",
+        }
+        yield from self._paginate("/me/mailFolders/inbox/messages", params)
 
     def ensure_folder(self, path: str) -> str:
         """Return the ID of a folder like "Jeux/Riot", creating missing levels."""
@@ -123,19 +118,13 @@ class GraphClient:
 
         parent_id = None
         for name in [part.strip() for part in path.strip("/").split("/") if part.strip()]:
-            match = next(
-                (
-                    f
-                    for f in self._child_folders(parent_id)
-                    if f["displayName"].lower() == name.lower()
-                ),
-                None,
-            )
+            children = self._paginate(_folders_url(parent_id), {"$select": "id,displayName"})
+            match = next((f for f in children if f["displayName"].lower() == name.lower()), None)
             if match:
                 parent_id = match["id"]
-                continue
-            url = f"/me/mailFolders/{parent_id}/childFolders" if parent_id else "/me/mailFolders"
-            parent_id = self.request("POST", url, json={"displayName": name}).json()["id"]
+            else:
+                created = self.request("POST", _folders_url(parent_id), json={"displayName": name})
+                parent_id = created.json()["id"]
 
         if parent_id is None:
             raise ValueError(f"Invalid folder path: {path!r}")
@@ -168,8 +157,7 @@ class GraphClient:
                 {
                     "id": str(i),
                     "method": "POST",
-                    # $select keeps the response small: we only need the new ID back
-                    "url": f"/me/messages/{msg_id}/move?$select=id",
+                    "url": f"/me/messages/{msg_id}/move",
                     "body": {"destinationId": destination},
                     "headers": {"Content-Type": "application/json", "Prefer": PREFER_IMMUTABLE_ID},
                 }
@@ -184,9 +172,10 @@ class GraphClient:
                 status = item.get("status", 500)
                 if status == 429 or status >= 500:
                     throttled[i] = pending[i]
-                    retry_after = str(item.get("headers", {}).get("Retry-After", ""))
-                    delay = max(delay, float(retry_after) if retry_after.isdigit() else 2**attempt)
+                    retry_after = (item.get("headers") or {}).get("Retry-After")
+                    delay = max(delay, _retry_delay(retry_after, attempt))
                 elif status < 300:
+                    # only the new ID is kept from the response, the rest is discarded
                     results[pending[i]] = (item.get("body") or {}).get("id", pending[i])
                 else:
                     results[pending[i]] = None

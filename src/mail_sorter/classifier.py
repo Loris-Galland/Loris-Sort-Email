@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 import httpx
 from sqlalchemy.orm import Session
 
-from mail_sorter.db import Email
+from mail_sorter.db import Email, Status
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "mistral")
@@ -159,6 +159,10 @@ def classify_batch(
     return parse_response(resp.json().get("message", {}).get("content", ""), len(emails))
 
 
+def _group_key(email: Email) -> tuple[str, str]:
+    return (email.sender_email or "", email.subject or "")
+
+
 def classify_emails(
     session: Session,
     http: httpx.Client,
@@ -174,7 +178,7 @@ def classify_emails(
     """
     groups: dict[tuple[str, str], list[Email]] = {}
     for email in emails:
-        groups.setdefault((email.sender_email or "", email.subject or ""), []).append(email)
+        groups.setdefault(_group_key(email), []).append(email)
     representatives = [group[0] for group in groups.values()]
 
     stats = ClassifyStats()
@@ -182,7 +186,7 @@ def classify_emails(
         batch = representatives[start : start + batch_size]
         results = classify_batch(http, batch, model)
         for i, rep in enumerate(batch):
-            group = groups[(rep.sender_email or "", rep.subject or "")]
+            group = groups[_group_key(rep)]
             if i not in results:
                 stats.failed += len(group)
                 continue
@@ -190,9 +194,9 @@ def classify_emails(
             for email in group:
                 email.category, email.confidence = apply_business_rules(email, category, confidence)
                 email.reason = reason
-                email.status = "classified"
+                email.status = Status.CLASSIFIED
             stats.classified += len(group)
         session.commit()
         if on_progress:
-            on_progress(sum(len(groups[(e.sender_email or "", e.subject or "")]) for e in batch))
+            on_progress(sum(len(groups[_group_key(e)]) for e in batch))
     return stats

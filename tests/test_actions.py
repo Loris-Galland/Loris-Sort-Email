@@ -69,7 +69,7 @@ class TestEmailModel:
 
 class TestActionLog:
     def test_message_ids_roundtrip(self):
-        log = ActionLog(action="delete", category="NEWSLETTER", count=3)
+        log = ActionLog(action="delete", target="NEWSLETTER", count=3)
         ids = ["id_001", "id_002", "id_003"]
         log.set_message_ids(ids)
         assert log.get_message_ids() == ids
@@ -79,7 +79,7 @@ class TestActionLog:
         assert log.get_message_ids() == []
 
     def test_insert(self, db_session):
-        log = ActionLog(action="delete", category="PROMO", count=150, backup_file="backups/b.json")
+        log = ActionLog(action="delete", target="PROMO", count=150, backup_file="backups/b.json")
         log.set_message_ids(["msg001", "msg002"])
         db_session.add(log)
         db_session.flush()

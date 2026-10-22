@@ -8,7 +8,7 @@ import pytest
 from mail_sorter import graph
 from mail_sorter.db import Email, sender_stats
 from mail_sorter.graph import MESSAGE_FIELDS, GraphClient, GraphError, NotLoggedInError
-from mail_sorter.processor import index_inbox, parse_message
+from mail_sorter.processor import clear_inbox_index, index_inbox, parse_message
 
 
 def make_raw(msg_id: str, address: str = "news@riotgames.com", **extra) -> dict:
@@ -56,7 +56,7 @@ def test_iter_messages_follows_pagination_and_selects_metadata_only():
             },
         )
 
-    messages = list(client_for(httpx.MockTransport(handler)).iter_messages())
+    messages = list(client_for(httpx.MockTransport(handler)).iter_inbox())
     assert [m["id"] for m in messages] == ["a", "b"]
     assert seen_params[0]["$select"] == MESSAGE_FIELDS
     assert "body" not in MESSAGE_FIELDS.lower()
@@ -113,6 +113,7 @@ def test_move_messages_batches_and_retries_throttled_items():
         batches.append(len(body["requests"]))
         responses = []
         for req in body["requests"]:
+            assert "$select" not in req["url"]
             msg_id = req["url"].split("/")[3]
             # the first time, message m1 is throttled
             if msg_id == "m1" and len(batches) == 1:
@@ -129,7 +130,8 @@ def test_move_messages_batches_and_retries_throttled_items():
     assert result["m1"] == "new_m1"
     assert result["m24"] == "new_m24"
     assert result["bad"] is None
-    assert batches == [20, 1, 6]
+    # batches of 4, plus one retry for the throttled message
+    assert batches == [4, 1, 4, 4, 4, 4, 4, 2]
 
 
 def test_parse_message_maps_fields():
@@ -151,7 +153,7 @@ class FakeClient:
     def __init__(self, messages):
         self.messages = messages
 
-    def iter_messages(self, folder="inbox"):
+    def iter_inbox(self):
         yield from self.messages
 
 
@@ -191,3 +193,12 @@ def test_sender_stats_groups_by_domain(db_session):
 
     by_email = sender_stats(db_session, "email")
     assert len(by_email) == 3
+
+
+def test_clear_inbox_index_keeps_moved_and_deleted(db_session):
+    index_inbox(FakeClient([make_raw("a"), make_raw("b"), make_raw("c")]), db_session)
+    db_session.query(Email).filter_by(message_id="a").one().status = "moved"
+    db_session.query(Email).filter_by(message_id="b").one().status = "deleted"
+
+    clear_inbox_index(db_session)
+    assert {e.message_id for e in db_session.query(Email)} == {"a", "b"}

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from mail_sorter.db import ActionLog, Email
+from mail_sorter.db import Action, ActionLog, Email, Status
 from mail_sorter.graph import GraphClient
 
 BACKUP_DIR = Path(os.getenv("BACKUP_DIR", "./backups"))
@@ -41,20 +41,21 @@ def write_backup(emails: list[Email], action: str, target: str | None) -> Path:
     return path
 
 
-def _run(
+def _move_and_log(
     client: GraphClient,
     session: Session,
     emails: list[Email],
-    action: str,
+    action: Action,
     destination: str,
-    label: str | None,
+    target: str | None,
     on_success: Callable[[Email], None],
     on_progress: Callable[[int], None] | None,
+    restores_id: int | None = None,
 ) -> ActionResult:
     if not emails:
         return ActionResult(0, 0)
 
-    backup = write_backup(emails, action, label)
+    backup = write_backup(emails, action, target)
     results = client.move_messages([e.message_id for e in emails], destination, on_progress)
 
     new_ids = []
@@ -67,7 +68,13 @@ def _run(
         on_success(email)
         new_ids.append(new_id)
 
-    log = ActionLog(action=action, category=label, count=len(new_ids), backup_file=str(backup))
+    log = ActionLog(
+        action=action,
+        target=target,
+        count=len(new_ids),
+        backup_file=str(backup),
+        restores_id=restores_id,
+    )
     log.set_message_ids(new_ids)
     session.add(log)
     session.flush()
@@ -85,10 +92,10 @@ def move_emails(
     folder_id = client.ensure_folder(folder)
 
     def mark(email: Email) -> None:
-        email.status = "moved"
+        email.status = Status.MOVED
         email.action_taken = f"moved:{folder}"
 
-    return _run(client, session, emails, "move", folder_id, folder, mark, on_progress)
+    return _move_and_log(client, session, emails, Action.MOVE, folder_id, folder, mark, on_progress)
 
 
 def delete_emails(
@@ -101,10 +108,16 @@ def delete_emails(
     """Soft delete: move emails to Deleted Items, where Outlook keeps them for a while."""
 
     def mark(email: Email) -> None:
-        email.status = "deleted"
+        email.status = Status.DELETED
         email.action_taken = "deleted"
 
-    return _run(client, session, emails, "delete", "deleteditems", label, mark, on_progress)
+    return _move_and_log(
+        client, session, emails, Action.DELETE, "deleteditems", label, mark, on_progress
+    )
+
+
+def is_restored(session: Session, log_id: int) -> bool:
+    return session.query(ActionLog).filter_by(action=Action.RESTORE, restores_id=log_id).count() > 0
 
 
 def restore(
@@ -115,17 +128,27 @@ def restore(
 ) -> ActionResult:
     """Move every email from a previous move/delete action back to the inbox."""
     log = session.get(ActionLog, log_id)
-    if log is None or log.action not in ("move", "delete"):
+    if log is None or log.action not in (Action.MOVE, Action.DELETE):
         raise ValueError(f"No move or delete action with id {log_id}")
-    marker = f"#{log_id}"
-    if session.query(ActionLog).filter_by(action="restore", category=marker).first():
+    if is_restored(session, log_id):
         raise ValueError(f"Action #{log_id} was already restored")
 
     ids = log.get_message_ids()
     emails = session.query(Email).filter(Email.message_id.in_(ids)).all()
+    if not emails:
+        raise ValueError(f"The emails of action #{log_id} are no longer known locally")
 
-    def mark(email: Email) -> None:
-        email.status = "classified" if email.category else "pending"
-        email.action_taken = None
-
-    return _run(client, session, emails, "restore", "inbox", marker, mark, on_progress)
+    result = _move_and_log(
+        client,
+        session,
+        emails,
+        Action.RESTORE,
+        "inbox",
+        log.target,
+        Email.back_to_inbox,
+        on_progress,
+        restores_id=log_id,
+    )
+    # emails missing from the local database count as failures, never silently skipped
+    result.failed += len(ids) - len(emails)
+    return result

@@ -32,3 +32,4 @@ htmlcov/
 Thumbs.db
 
 rules.toml
+demo_rules.toml

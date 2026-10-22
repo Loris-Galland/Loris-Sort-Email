@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
-from mail_sorter.db import IN_INBOX, Email
+from mail_sorter.db import IN_INBOX, Email, Status
 from mail_sorter.graph import GraphClient
 
 
@@ -46,6 +46,14 @@ def parse_message(raw: dict) -> dict:
     }
 
 
+def clear_inbox_index(session: Session) -> None:
+    """Forget inbox emails and their classification, but keep the emails this tool
+    moved or deleted, otherwise their actions could no longer be restored.
+    """
+    kept = (Status.MOVED, Status.DELETED)
+    session.query(Email).filter(Email.status.not_in(kept)).delete()
+
+
 def index_inbox(
     client: GraphClient,
     session: Session,
@@ -58,7 +66,7 @@ def index_inbox(
     existing = {email.message_id: email for email in session.query(Email)}
     seen: set[str] = set()
 
-    for raw in client.iter_messages("inbox"):
+    for raw in client.iter_inbox():
         data = parse_message(raw)
         seen.add(data["message_id"])
         email = existing.get(data["message_id"])
@@ -72,8 +80,7 @@ def index_inbox(
             for field in ("subject", "is_read", "importance", "has_attachments", "size_bytes"):
                 setattr(email, field, data[field])
             if email.status not in IN_INBOX:
-                email.status = "classified" if email.category else "pending"
-                email.action_taken = None
+                email.back_to_inbox()
             stats.updated += 1
 
         if on_progress:
@@ -81,7 +88,7 @@ def index_inbox(
 
     for message_id, email in existing.items():
         if message_id not in seen and email.status in IN_INBOX:
-            email.status = "gone"
+            email.status = Status.GONE
             stats.gone += 1
 
     session.flush()

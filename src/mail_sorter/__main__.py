@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 import typer
 from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
@@ -6,6 +8,9 @@ from rich.table import Table
 from mail_sorter.auth import auth_app
 from mail_sorter.db import IN_INBOX, ActionLog, Email, get_session, init_db, sender_stats
 from mail_sorter.graph import GraphClient, GraphError, NotLoggedInError
+
+if TYPE_CHECKING:
+    from mail_sorter.rules import Rule
 
 app = typer.Typer(
     name="mail-sorter",
@@ -48,12 +53,12 @@ def _size(size_bytes: int) -> str:
 
 
 def _sync(client: GraphClient, force: bool = False) -> None:
-    from mail_sorter.processor import index_inbox
+    from mail_sorter.processor import clear_inbox_index, index_inbox
 
     total = client.inbox_count()
     with get_session() as session:
         if force:
-            session.query(Email).delete()
+            clear_inbox_index(session)
         with _progress() as progress:
             task = progress.add_task("Indexing inbox", total=total)
             try:
@@ -71,7 +76,7 @@ def _sync(client: GraphClient, force: bool = False) -> None:
 @app.command("index")
 def index(
     force: bool = typer.Option(
-        False, "--force", "-f", help="Clear local data (including classifications) first"
+        False, "--force", "-f", help="Forget inbox emails and classifications first"
     ),
 ) -> None:
     """Fetch inbox metadata from Outlook and store it in SQLite."""
@@ -136,7 +141,7 @@ def rules_init() -> None:
     )
 
 
-def _rules_preview(matches) -> int:
+def _rules_preview(matches: list[tuple["Rule", list[Email]]]) -> int:
     table = Table(title="Rules preview")
     table.add_column("#", justify="right")
     table.add_column("Senders", style="cyan")
@@ -245,7 +250,7 @@ def history(limit: int = typer.Option(20, "--limit", "-n")) -> None:
             str(log.id),
             log.timestamp.strftime("%Y-%m-%d %H:%M") if log.timestamp else "",
             log.action,
-            log.category or "",
+            log.target or "",
             str(log.count),
         )
     console.print(table)

@@ -8,6 +8,7 @@ import os
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from enum import StrEnum
 
 from dotenv import load_dotenv
 from sqlalchemy import Boolean, Column, DateTime, Integer, String, create_engine, event
@@ -18,8 +19,23 @@ load_dotenv()
 
 DB_PATH = os.getenv("DB_PATH", "./mail_sorter.db")
 
+
+class Status(StrEnum):
+    PENDING = "pending"  # in the inbox, not classified yet
+    CLASSIFIED = "classified"  # in the inbox, with a category
+    MOVED = "moved"  # moved to a folder by this tool
+    DELETED = "deleted"  # moved to Deleted Items by this tool
+    GONE = "gone"  # left the inbox outside this tool
+
+
+class Action(StrEnum):
+    MOVE = "move"
+    DELETE = "delete"
+    RESTORE = "restore"
+
+
 # Statuses of emails still sitting in the Outlook inbox
-IN_INBOX = ("pending", "classified")
+IN_INBOX = (Status.PENDING, Status.CLASSIFIED)
 
 _engine = None
 _SessionLocal = None
@@ -63,11 +79,14 @@ class Email(Base):
     confidence = Column(Integer)  # 0-100
     reason = Column(String)
 
-    # pending | classified while the email is in the inbox, then moved | deleted | gone
-    status = Column(String, default="pending")
+    status = Column(String, default=Status.PENDING)
     action_taken = Column(String)  # e.g. "moved:Jeux/Riot" or "deleted"
 
     indexed_at = Column(DateTime, default=lambda: datetime.now(UTC))
+
+    def back_to_inbox(self) -> None:
+        self.status = Status.CLASSIFIED if self.category else Status.PENDING
+        self.action_taken = None
 
     def to_dict(self) -> dict:
         return {
@@ -101,8 +120,9 @@ class ActionLog(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     timestamp = Column(DateTime, default=lambda: datetime.now(UTC))
-    action = Column(String, nullable=False)  # delete | move | restore
-    category = Column(String)
+    action = Column(String, nullable=False)  # see Action
+    target = Column(String)  # folder path, or a label for deletions
+    restores_id = Column(Integer)  # for a restore, the id of the action it undid
     count = Column(Integer)
     backup_file = Column(String)  # relative path to the JSON backup
     message_ids_json = Column(String)  # JSON-serialized list of Graph message IDs
