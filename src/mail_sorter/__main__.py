@@ -279,10 +279,48 @@ def restore_cmd(log_id: int = typer.Argument(..., help="Id from 'mail-sorter his
 @app.command("classify")
 def classify(
     batch_size: int = typer.Option(30, "--batch-size", "-b", help="Emails per Ollama request"),
+    model: str = typer.Option(None, "--model", "-m", help="Ollama model (default: OLLAMA_MODEL)"),
+    limit: int = typer.Option(0, "--limit", "-n", help="Only classify this many emails (0 = all)"),
+    redo: bool = typer.Option(False, "--all", help="Also re-classify already classified emails"),
 ) -> None:
-    """[Phase 3] Classify emails using a local Ollama model."""
-    console.print("[yellow]Phase 3 not implemented yet.[/yellow]")
-    raise typer.Exit(0)
+    """Classify inbox emails into categories using a local Ollama model."""
+    import httpx
+
+    from mail_sorter.classifier import OLLAMA_MODEL, OllamaError, check_ollama, classify_emails
+
+    model = model or OLLAMA_MODEL
+    http = httpx.Client()
+    try:
+        check_ollama(http, model)
+    except OllamaError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    init_db()
+    with get_session() as session:
+        statuses = IN_INBOX if redo else ("pending",)
+        query = session.query(Email).filter(Email.status.in_(statuses))
+        query = query.order_by(Email.received_at.desc())
+        emails = query.limit(limit).all() if limit else query.all()
+        if not emails:
+            console.print("Nothing to classify. Run 'mail-sorter index' first, or use --all.")
+            raise typer.Exit(0)
+
+        console.print(f"Classifying {len(emails)} emails with {model} (Ctrl+C stops safely).")
+        with _progress() as progress:
+            task = progress.add_task("Classifying", total=len(emails))
+            try:
+                stats = classify_emails(
+                    session, http, emails, batch_size, model, lambda n: progress.advance(task, n)
+                )
+            except httpx.HTTPError as exc:
+                console.print(f"[red]Ollama error:[/red] {exc}")
+                raise typer.Exit(1) from exc
+
+    console.print(f"[green]{stats.classified} classified[/green], {stats.failed} failed.")
+    if stats.failed:
+        console.print("Failed emails stay pending, run the command again to retry them.")
+    console.print("Next: uv run streamlit run ui/app.py")
 
 
 @app.command("demo")
