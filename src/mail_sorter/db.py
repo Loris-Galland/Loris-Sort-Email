@@ -18,6 +18,9 @@ load_dotenv()
 
 DB_PATH = os.getenv("DB_PATH", "./mail_sorter.db")
 
+# Statuses of emails still sitting in the Outlook inbox
+IN_INBOX = ("pending", "classified")
+
 _engine = None
 _SessionLocal = None
 
@@ -60,9 +63,9 @@ class Email(Base):
     confidence = Column(Integer)  # 0-100
     reason = Column(String)
 
-    # Workflow state: pending -> classified -> deleted | archived
+    # pending | classified while the email is in the inbox, then moved | deleted | gone
     status = Column(String, default="pending")
-    action_taken = Column(String)
+    action_taken = Column(String)  # e.g. "moved:Jeux/Riot" or "deleted"
 
     indexed_at = Column(DateTime, default=lambda: datetime.now(UTC))
 
@@ -98,7 +101,7 @@ class ActionLog(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     timestamp = Column(DateTime, default=lambda: datetime.now(UTC))
-    action = Column(String, nullable=False)  # delete | archive | restore
+    action = Column(String, nullable=False)  # delete | move | restore
     category = Column(String)
     count = Column(Integer)
     backup_file = Column(String)  # relative path to the JSON backup
@@ -109,6 +112,35 @@ class ActionLog(Base):
 
     def set_message_ids(self, ids: list[str]) -> None:
         self.message_ids_json = json.dumps(ids)
+
+
+def sender_domain(address: str | None) -> str:
+    return address.rsplit("@", 1)[-1].lower() if address and "@" in address else ""
+
+
+def sender_stats(session: Session, by: str = "domain") -> list[dict]:
+    """Group inbox emails by sender address or domain, biggest senders first."""
+    stats: dict[str, dict] = {}
+    for email in session.query(Email).filter(Email.status.in_(IN_INBOX)):
+        key = sender_domain(email.sender_email) if by == "domain" else email.sender_email or ""
+        row = stats.setdefault(
+            key,
+            {"sender": key, "name": email.sender_name, "count": 0, "unread": 0, "size_bytes": 0},
+        )
+        row["count"] += 1
+        row["unread"] += 0 if email.is_read else 1
+        row["size_bytes"] += email.size_bytes or 0
+        if email.received_at and (not row.get("latest") or email.received_at > row["latest"]):
+            row["latest"] = email.received_at
+    return sorted(stats.values(), key=lambda r: r["count"], reverse=True)
+
+
+def configure(path: str) -> None:
+    """Point the module at another database file (used by the demo)."""
+    global DB_PATH, _engine, _SessionLocal
+    DB_PATH = path
+    _engine = None
+    _SessionLocal = None
 
 
 def get_engine():
