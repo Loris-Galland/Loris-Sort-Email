@@ -129,9 +129,7 @@ def _wait_for_callback(timeout: int = 120) -> tuple[str | None, str | None, str 
     return _CallbackHandler.auth_code, _CallbackHandler.auth_state, _CallbackHandler.error
 
 
-def _exchange_code_for_token(
-    client_id: str, tenant_id: str, code: str, code_verifier: str
-) -> dict:
+def _exchange_code_for_token(client_id: str, tenant_id: str, code: str, code_verifier: str) -> dict:
     """Exchange the authorization code for access + refresh tokens.
 
     No client_secret needed — the code_verifier proves we initiated the flow.

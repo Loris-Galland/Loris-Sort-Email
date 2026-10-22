@@ -11,18 +11,26 @@ def test_exactly_eight_categories():
 
 def test_category_names_match_prompt():
     expected = {
-        "NEWSLETTER", "PROMO", "NOTIFICATION", "FACTURE",
-        "PROFESSIONNEL", "PERSONNEL", "SPAM", "A_TRAITER",
+        "NEWSLETTER",
+        "PROMO",
+        "NOTIFICATION",
+        "FACTURE",
+        "PROFESSIONNEL",
+        "PERSONNEL",
+        "SPAM",
+        "A_TRAITER",
     }
     assert expected == VALID_CATEGORIES
 
 
 def test_ollama_response_format():
     """Verify the JSON format we expect from Ollama can be parsed correctly."""
-    mock_response = json.dumps([
-        {"id": "msg_promo_001", "category": "PROMO", "confidence": 94, "reason": "Commercial"},
-        {"id": "msg_facture_002", "category": "FACTURE", "confidence": 88, "reason": "Billing"},
-    ])
+    mock_response = json.dumps(
+        [
+            {"id": "msg_promo_001", "category": "PROMO", "confidence": 94, "reason": "Commercial"},
+            {"id": "msg_facture_002", "category": "FACTURE", "confidence": 88, "reason": "Billing"},
+        ]
+    )
 
     parsed = json.loads(mock_response)
 

@@ -57,7 +57,7 @@ class Email(Base):
     # Set by classifier.py — null until Phase 3 runs
     # see classifier.py for the full list of valid values
     category = Column(String)
-    confidence = Column(Integer) # 0-100
+    confidence = Column(Integer)  # 0-100
     reason = Column(String)
 
     # Workflow state: pending -> classified -> deleted | archived
@@ -101,7 +101,7 @@ class ActionLog(Base):
     action = Column(String, nullable=False)  # delete | archive | restore
     category = Column(String)
     count = Column(Integer)
-    backup_file = Column(String)       # relative path to the JSON backup
+    backup_file = Column(String)  # relative path to the JSON backup
     message_ids_json = Column(String)  # JSON-serialized list of Graph message IDs
 
     def get_message_ids(self) -> list[str]:

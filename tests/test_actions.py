@@ -46,9 +46,22 @@ class TestEmailModel:
         email = db_session.query(Email).filter_by(message_id="td").first()
         d = email.to_dict()
         required = {
-            "id", "message_id", "subject", "sender_email", "sender_name",
-            "received_at", "is_read", "has_attachments", "importance", "size_bytes",
-            "category", "confidence", "reason", "status", "action_taken", "indexed_at",
+            "id",
+            "message_id",
+            "subject",
+            "sender_email",
+            "sender_name",
+            "received_at",
+            "is_read",
+            "has_attachments",
+            "importance",
+            "size_bytes",
+            "category",
+            "confidence",
+            "reason",
+            "status",
+            "action_taken",
+            "indexed_at",
         }
         assert required.issubset(d.keys())
         assert d["status"] == "pending"
