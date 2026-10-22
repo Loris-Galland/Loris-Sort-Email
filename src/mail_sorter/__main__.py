@@ -4,7 +4,7 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, T
 from rich.table import Table
 
 from mail_sorter.auth import auth_app
-from mail_sorter.db import Email, get_session, init_db, sender_stats
+from mail_sorter.db import IN_INBOX, ActionLog, Email, get_session, init_db, sender_stats
 from mail_sorter.graph import GraphClient, GraphError, NotLoggedInError
 
 app = typer.Typer(
@@ -14,7 +14,10 @@ app = typer.Typer(
 )
 console = Console()
 
+rules_app = typer.Typer(help="Sort emails into folders by sender, using rules.toml")
+
 app.add_typer(auth_app, name="auth", help="Login / logout from Microsoft Outlook")
+app.add_typer(rules_app, name="rules", help="Sort emails into folders by sender")
 
 
 def _progress() -> Progress:
@@ -44,19 +47,10 @@ def _size(size_bytes: int) -> str:
     return f"{size_bytes / 1_048_576:.1f} MB"
 
 
-@app.command("index")
-def index(
-    force: bool = typer.Option(
-        False, "--force", "-f", help="Clear local data (including classifications) first"
-    ),
-) -> None:
-    """Fetch inbox metadata from Outlook and store it in SQLite."""
+def _sync(client: GraphClient, force: bool = False) -> None:
     from mail_sorter.processor import index_inbox
 
-    init_db()
-    client = _graph_client()
     total = client.inbox_count()
-
     with get_session() as session:
         if force:
             session.query(Email).delete()
@@ -69,9 +63,20 @@ def index(
                 raise typer.Exit(1) from exc
 
     console.print(
-        f"[green]Done.[/green] {stats.added} new, {stats.updated} refreshed, "
+        f"[green]Indexed.[/green] {stats.added} new, {stats.updated} refreshed, "
         f"{stats.gone} no longer in the inbox."
     )
+
+
+@app.command("index")
+def index(
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Clear local data (including classifications) first"
+    ),
+) -> None:
+    """Fetch inbox metadata from Outlook and store it in SQLite."""
+    init_db()
+    _sync(_graph_client(), force)
     console.print("Next: mail-sorter senders")
 
 
@@ -111,6 +116,164 @@ def senders(
             latest.strftime("%Y-%m-%d") if latest else "",
         )
     console.print(table)
+
+
+@rules_app.command("init")
+def rules_init() -> None:
+    """Create rules.toml with an example and your biggest senders as suggestions."""
+    from mail_sorter.rules import RULES_PATH, build_template
+
+    if RULES_PATH.exists():
+        console.print(f"{RULES_PATH} already exists, edit it directly.")
+        raise typer.Exit(0)
+
+    init_db()
+    with get_session() as session:
+        top = [(r["sender"], r["count"]) for r in sender_stats(session)[:15] if r["sender"]]
+    RULES_PATH.write_text(build_template(top), encoding="utf-8")
+    console.print(
+        f"[green]Created {RULES_PATH}[/green]. Edit it, then run: mail-sorter rules apply"
+    )
+
+
+def _rules_preview(matches) -> int:
+    table = Table(title="Rules preview")
+    table.add_column("#", justify="right")
+    table.add_column("Senders", style="cyan")
+    table.add_column("Action")
+    table.add_column("Emails", justify="right")
+    for i, (rule, emails) in enumerate(matches, start=1):
+        action = "[red]delete (trash)[/red]" if rule.delete else f"move to {rule.folder}"
+        table.add_row(str(i), ", ".join(rule.senders), action, str(len(emails)))
+    console.print(table)
+    return sum(len(emails) for _, emails in matches)
+
+
+@rules_app.command("apply")
+def rules_apply(
+    execute: bool = typer.Option(
+        False, "--execute", help="Actually move/delete emails (default is a preview)"
+    ),
+) -> None:
+    """Preview, then apply, the rules from rules.toml to the inbox."""
+    from mail_sorter.actions import delete_emails, move_emails
+    from mail_sorter.rules import RuleError, load_rules, match_rules
+
+    try:
+        rules = load_rules()
+    except RuleError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    init_db()
+    client = _graph_client() if execute else None
+    if client:
+        # rules must run on fresh data, the inbox may have changed since the last index
+        _sync(client)
+
+    with get_session() as session:
+        inbox = session.query(Email).filter(Email.status.in_(IN_INBOX)).all()
+        if not inbox:
+            console.print("No emails indexed yet. Run: mail-sorter index")
+            raise typer.Exit(0)
+
+        matches = match_rules(inbox, rules)
+        total = _rules_preview(matches)
+        if total == 0:
+            console.print("No email matches your rules.")
+            raise typer.Exit(0)
+        if not execute:
+            console.print(f"{total} emails would be affected. Run with --execute to apply.")
+            raise typer.Exit(0)
+
+        to_delete = sum(len(emails) for rule, emails in matches if rule.delete)
+        question = f"Apply these rules to {total} emails"
+        if to_delete:
+            question += f" ({to_delete} will go to the trash)"
+        if not typer.confirm(question + "?"):
+            raise typer.Exit(0)
+
+        with _progress() as progress:
+            for rule, emails in matches:
+                if not emails:
+                    continue
+                task = progress.add_task(rule.label, total=len(emails))
+
+                def advance(n: int, task=task) -> None:
+                    progress.advance(task, n)
+
+                try:
+                    if rule.delete:
+                        label = ",".join(rule.senders)
+                        result = delete_emails(client, session, emails, label, advance)
+                    else:
+                        result = move_emails(client, session, emails, rule.folder, advance)
+                except GraphError as exc:
+                    console.print(f"[red]Graph API error on {rule.label}:[/red] {exc}")
+                    continue
+                if result.failed:
+                    console.print(
+                        f"[yellow]{result.failed} emails could not be processed.[/yellow]"
+                    )
+                # commit after each rule so a later failure does not lose earlier progress
+                session.commit()
+
+    console.print(
+        "[green]Done.[/green] Undo with: mail-sorter history, then mail-sorter restore <id>"
+    )
+
+
+@app.command("history")
+def history(limit: int = typer.Option(20, "--limit", "-n")) -> None:
+    """List past move/delete/restore actions."""
+    init_db()
+    with get_session() as session:
+        logs = session.query(ActionLog).order_by(ActionLog.id.desc()).limit(limit).all()
+
+    if not logs:
+        console.print("No action yet.")
+        raise typer.Exit(0)
+
+    table = Table(title="Action history")
+    table.add_column("Id", justify="right")
+    table.add_column("Date (UTC)")
+    table.add_column("Action")
+    table.add_column("Target")
+    table.add_column("Emails", justify="right")
+    for log in logs:
+        table.add_row(
+            str(log.id),
+            log.timestamp.strftime("%Y-%m-%d %H:%M") if log.timestamp else "",
+            log.action,
+            log.category or "",
+            str(log.count),
+        )
+    console.print(table)
+
+
+@app.command("restore")
+def restore_cmd(log_id: int = typer.Argument(..., help="Id from 'mail-sorter history'")) -> None:
+    """Move the emails of a past move/delete action back to the inbox."""
+    from mail_sorter.actions import restore
+
+    init_db()
+    client = _graph_client()
+    with get_session() as session:
+        log = session.get(ActionLog, log_id)
+        if log is None:
+            console.print(f"[red]No action with id {log_id}[/red]")
+            raise typer.Exit(1)
+        if not typer.confirm(f"Move {log.count} emails back to the inbox?"):
+            raise typer.Exit(0)
+        with _progress() as progress:
+            task = progress.add_task("Restoring", total=log.count)
+            try:
+                result = restore(client, session, log_id, lambda n: progress.advance(task, n))
+            except (ValueError, GraphError) as exc:
+                console.print(f"[red]{exc}[/red]")
+                raise typer.Exit(1) from exc
+
+    console.print(f"[green]{result.succeeded} restored[/green], {result.failed} failed.")
 
 
 @app.command("classify")
