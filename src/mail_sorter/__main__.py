@@ -324,10 +324,19 @@ def classify(
 
 
 @app.command("demo")
-def demo() -> None:
-    """Generate 1000 fake emails to test the dashboard without an Outlook account."""
-    console.print("[yellow]Demo mode not implemented yet.[/yellow]")
-    raise typer.Exit(0)
+def demo(count: int = typer.Option(1000, "--count", "-n")) -> None:
+    """Create a separate demo database to try the dashboard without an Outlook account."""
+    from mail_sorter import db
+    from mail_sorter.demo import DEMO_DB_PATH, generate_emails
+
+    db.configure(DEMO_DB_PATH)
+    db.Base.metadata.drop_all(db.get_engine())
+    init_db()
+    with get_session() as session:
+        session.add_all(Email(**data) for data in generate_emails(count))
+
+    console.print(f"[green]{count} fake emails written to {DEMO_DB_PATH}[/green]")
+    console.print("Open the dashboard with: uv run streamlit run ui/app.py -- --demo")
 
 
 if __name__ == "__main__":
